@@ -1,6 +1,7 @@
 from unittest import TestCase
 from mock import patch
 
+import json
 import os
 
 import requests
@@ -78,8 +79,13 @@ class TestYouTubeTranscriptApi(TestCase):
         transcript_list = YouTubeTranscriptApi.list_transcripts('GJLlxj_dtq8')
 
         language_codes = {transcript.language_code for transcript in transcript_list}
-
+        metadata = transcript_list.metadata
         self.assertEqual(language_codes, {'zh', 'de', 'en', 'hi', 'ja', 'ko', 'es', 'cs', 'en'})
+
+    def test_list_transcripts_metadata(self):
+        transcript_list = YouTubeTranscriptApi.list_transcripts('GJLlxj_dtq8')
+        metadata = transcript_list.metadata
+        self.assertTrue(True)
 
     def test_list_transcripts__find_manually_created(self):
         transcript_list = YouTubeTranscriptApi.list_transcripts('GJLlxj_dtq8')

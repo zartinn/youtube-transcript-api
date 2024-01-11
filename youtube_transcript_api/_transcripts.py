@@ -12,7 +12,7 @@ from xml.etree import ElementTree
 import re
 
 from requests import HTTPError
-
+from html.parser import HTMLParser
 from ._html_unescaping import unescape
 from ._errors import (
     VideoUnavailable,
@@ -36,16 +36,31 @@ def _raise_http_errors(response, video_id):
     except HTTPError as error:
         raise YouTubeRequestFailed(error, video_id)
 
+class UploadDateParser(HTMLParser):
+    def handle_starttag(self, tag, attrs):
+        if tag == "meta":
+            attr_dict = dict(attrs)
+            if "itemprop" in attr_dict and attr_dict["itemprop"] == "uploadDate":
+                self.upload_date = attr_dict["content"]
+
 
 class TranscriptListFetcher(object):
     def __init__(self, http_client):
         self._http_client = http_client
 
     def fetch(self, video_id):
+        htmldata=self._fetch_video_html(video_id)
+        captionsdata=self._extract_captions_json(htmldata, video_id)
+        try:
+            metadata=self._extract_metadata_json(htmldata, video_id)
+        except:
+            metadata={}
+
         return TranscriptList.build(
             self._http_client,
             video_id,
-            self._extract_captions_json(self._fetch_video_html(video_id), video_id),
+            captionsdata,
+            metadata
         )
 
     def _extract_captions_json(self, html, video_id):
@@ -71,6 +86,38 @@ class TranscriptListFetcher(object):
             raise NoTranscriptAvailable(video_id)
 
         return captions_json
+
+    def getUploadDate(self, html_data):
+        parser = UploadDateParser()
+        parser.feed(html_data)
+        upload_date = getattr(parser, 'upload_date', None)
+        return upload_date
+
+    def _extract_metadata_json(self, html, video_id):
+        splitted_html = html.split('"videoDetails":')
+        upload_date = self.getUploadDate(html)
+
+        if len(splitted_html) <= 1:
+            if video_id.startswith('http://') or video_id.startswith('https://'):
+                raise InvalidVideoId(video_id)
+            if 'class="g-recaptcha"' in html:
+                raise TooManyRequests(video_id)
+            if '"playabilityStatus":' not in html:
+                raise VideoUnavailable(video_id)
+
+            raise TranscriptsDisabled(video_id)
+
+        html_part=splitted_html[1]
+        if ',"annotations"' in html_part:
+            html_part = html_part.split(',"annotations"')[0]
+        elif ',"playerConfig"' in html_part:
+            html_part = html_part.split(',"playerConfig"')[0]
+        html_part = html_part.replace('\n', '')
+        metadata_json = json.loads(html_part)
+        keys_to_keep=['videoId', 'author', 'title', 'lengthSeconds', 'shortDescription', 'viewCount']
+        metadata_json = {key: metadata_json[key] for key in keys_to_keep if key in metadata_json}
+        metadata_json['uploadDate'] = upload_date
+        return metadata_json
 
     def _create_consent_cookie(self, html, video_id):
         match = re.search('name="v" value="(.*?)"', html)
@@ -98,7 +145,7 @@ class TranscriptList(object):
     for a given YouTube video. Also it provides functionality to search for a transcript in a given language.
     """
 
-    def __init__(self, video_id, manually_created_transcripts, generated_transcripts, translation_languages):
+    def __init__(self, video_id, metadata, manually_created_transcripts, generated_transcripts, translation_languages):
         """
         The constructor is only for internal use. Use the static build method instead.
 
@@ -112,12 +159,13 @@ class TranscriptList(object):
         :type translation_languages: list[dict[str, str]]
         """
         self.video_id = video_id
+        self.metadata = metadata
         self._manually_created_transcripts = manually_created_transcripts
         self._generated_transcripts = generated_transcripts
         self._translation_languages = translation_languages
 
     @staticmethod
-    def build(http_client, video_id, captions_json):
+    def build(http_client, video_id, captions_json, metadata):
         """
         Factory method for TranscriptList.
 
@@ -158,10 +206,14 @@ class TranscriptList(object):
 
         return TranscriptList(
             video_id,
+            metadata,
             manually_created_transcripts,
             generated_transcripts,
             translation_languages,
         )
+
+    def get_metadata(self):
+        return json.load(self.metadata)
 
     def __iter__(self):
         return iter(list(self._manually_created_transcripts.values()) + list(self._generated_transcripts.values()))
